@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Example: read a random quote aloud at 9:30am and 2pm daily
+
+  1. Edit the path to match where you cloned this repo
+  2. Copy to ~/Library/LaunchAgents/
+  3. Load: launchctl load ~/Library/LaunchAgents/com.kokoro.read-quote.plist
+-->
+<dict>
+    <key>Label</key>
+    <string>com.kokoro.read-quote</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <!-- Change this path to where you cloned the repo -->
+        <string>/path/to/kokoro-tts-cli/read-quote.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>9</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>14</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+</dict>
+</plist>
