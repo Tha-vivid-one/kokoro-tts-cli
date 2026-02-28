@@ -4,7 +4,7 @@ Local text-to-speech that doesn't suck. No API keys, no cloud, no cost.
 
 ## The story
 
-I wanted Claude Code to read its terminal output aloud. Tried macOS `say` first — switched between nine different voices and the voice never were really bad. How are they the same ones from 2015?
+I wanted my terminal tools to read output aloud. Tried macOS `say` first — cycled through nine different voices and they were all bad. How are they the same ones from 2015?
 
 Tried Piper (open source, recommended everywhere). It was passable, but could I listen to that for 6 hours straight?
 
@@ -12,7 +12,7 @@ Found [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) on HuggingFace. 54
 
 This repo wraps it into simple shell scripts so you can use it from the terminal, pipe text into it, or schedule it with cron jobs.
 
-If you think this is too hard to intall give your favorite AI the URL and say "Read back when you've set it up"
+If you think this is too hard to install give your favorite AI the URL and say "Read back when you've set it up"
 
 ## Install
 
@@ -46,6 +46,26 @@ echo "some command output" | ./speak.sh
 ./stop.sh
 ```
 
+## Warm daemon (instant generation)
+
+The first time you run `speak.sh`, Kokoro loads the model from scratch (~5s). If you're using it frequently, the warm daemon keeps the model in memory so generation is near-instant (~1s).
+
+```bash
+# Start the daemon (loads model once, stays resident)
+./warm.sh
+
+# Now speak.sh uses the daemon automatically
+./speak.sh "this was generated in about a second"
+
+# Daemon auto-shuts down after 10 minutes of inactivity
+# Or kill it manually:
+./stop.sh
+```
+
+If the daemon isn't running, `speak.sh` falls back to cold start automatically. You don't need the daemon — it just makes things faster.
+
+Logs are written to `daemon.log` in the repo directory. Check what's happening with `tail daemon.log`.
+
 ## Read random quotes aloud
 
 ```bash
@@ -70,19 +90,15 @@ launchctl load ~/Library/LaunchAgents/com.kokoro.read-quote.plist
 
 Now you get a random quote read aloud at 9:30am and 2pm. No app, no notification, just a voice.
 
-## Use with Claude Code
+## Use with AI coding tools
 
-Tell Claude to pipe output through the speak script:
-
-```
-"read that back to me"
-```
-
-Or add it to a Claude Code hook for automatic readback. The script accepts piped input so Claude just runs:
+The script accepts piped input, so any tool that can run shell commands can use it:
 
 ```bash
-echo "whatever it wants to say" | /path/to/speak.sh
+echo "whatever text to speak" | /path/to/speak.sh
 ```
+
+Works with any AI assistant, shell script, or automation tool that can pipe to stdout.
 
 ## Available voices
 

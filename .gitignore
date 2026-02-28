@@ -3,3 +3,4 @@ __pycache__/
 *.wav
 *.pyc
 .DS_Store
+daemon.log

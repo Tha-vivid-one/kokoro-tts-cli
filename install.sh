@@ -44,7 +44,7 @@ $PYTHON -m venv "$SCRIPT_DIR/.venv"
 "$SCRIPT_DIR/.venv/bin/pip" install -q kokoro soundfile pathvalidate numpy
 
 # Make scripts executable
-chmod +x "$SCRIPT_DIR/speak.sh" "$SCRIPT_DIR/stop.sh" "$SCRIPT_DIR/read-quote.sh"
+chmod +x "$SCRIPT_DIR/speak.sh" "$SCRIPT_DIR/stop.sh" "$SCRIPT_DIR/read-quote.sh" "$SCRIPT_DIR/warm.sh" "$SCRIPT_DIR/kokoro-daemon.py"
 
 # Test it
 echo ""

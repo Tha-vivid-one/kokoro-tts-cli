@@ -1,5 +1,7 @@
 #!/bin/zsh
 # Speak text using Kokoro TTS (local, no API, no cloud)
+# Uses the warm daemon if running, otherwise falls back to cold start.
+#
 # Usage: echo "text" | ./speak.sh
 #    or: ./speak.sh "text to speak"
 #    or: ./speak.sh -v am_adam "text with different voice"
@@ -11,6 +13,7 @@ VOICE="af_heart"
 SPEED="1.0"
 VENV="$SCRIPT_DIR/.venv/bin/python3"
 TMPFILE=$(mktemp /tmp/kokoro-XXXXX.wav)
+SOCKET=/tmp/kokoro-daemon.sock
 
 # Parse flags
 while [[ "$1" == -* ]]; do
@@ -50,8 +53,24 @@ if [ ! -f "$VENV" ]; then
     exit 1
 fi
 
-# Generate audio
-"$VENV" -c "
+# Try warm daemon first
+if [ -S "$SOCKET" ]; then
+    "$VENV" -c "
+import socket, json, sys
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.connect('$SOCKET')
+sock.sendall(json.dumps({'text': '''$TEXT''', 'voice': '$VOICE', 'output': '$TMPFILE'}).encode())
+sock.shutdown(socket.SHUT_WR)
+result = sock.recv(1024).decode()
+sock.close()
+sys.exit(0 if result == 'ok' else 1)
+" 2>/dev/null
+    daemon_ok=$?
+fi
+
+# Fall back to cold start if daemon unavailable or failed
+if [ ! -S "$SOCKET" ] || [ "${daemon_ok:-1}" -ne 0 ]; then
+    "$VENV" -c "
 import warnings
 warnings.filterwarnings('ignore')
 from kokoro import KPipeline
@@ -65,6 +84,7 @@ for gs, ps, audio in generator:
     audio_chunks.append(audio)
 sf.write('$TMPFILE', np.concatenate(audio_chunks), 24000)
 " 2>/dev/null
+fi
 
 # Play audio at specified speed
 afplay -r "$SPEED" "$TMPFILE"
