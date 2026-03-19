@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TTS Stop Hook — summarizes via mlx-lm (Qwen2.5-1.5B) then pushes to queue
+# TTS Stop Hook — smart summarization with length scaling and content detection
 # Only queues if the warm daemon is running (menu bar icon = on/off)
 
 SUMMARIZE="/Users/lincoln/kokoro-tts-cli/summarize.py"
@@ -41,6 +41,9 @@ if [ -f "$VOICE_FILE" ]; then
   [ -n "$v" ] && voice="$v"
 fi
 
+# Measure original length before cleaning (for code-only detection)
+original_word_count=$(echo "$last_message" | wc -w | tr -d ' ')
+
 # Strip code blocks and markdown before summarizing
 cleaned=$(echo "$last_message" | sed \
   -e '/^```/,/^```/d' \
@@ -61,13 +64,93 @@ if [ -z "$cleaned" ]; then
   exit 0
 fi
 
-# Summarize via mlx-lm (local, no external API)
-summary=$(echo "$cleaned" | "$VENV" "$SUMMARIZE" 2>/dev/null)
+# --- Word count and scaling table ---
+word_count=$(echo "$cleaned" | wc -w | tr -d ' ')
 
-# Fall back to cleaned text if summarization fails
-if [ -z "$summary" ]; then
-  echo "[$(date)] mlx-lm summarization failed, using cleaned text" >> "$LOG"
+# Code-only detection: if cleaned is <20% of original, it was mostly code
+if [ "$original_word_count" -gt 50 ] && [ "$word_count" -lt $((original_word_count / 5)) ]; then
+  summary="Code was generated. Check the output."
+  echo "[$(date)] Code-only response detected (${word_count}/${original_word_count} words after clean)" >> "$LOG"
+  # Skip to queue
+  mkdir -p "$QUEUE_DIR"
+  (
+    flock -x 9
+    counter=$(cat "$QUEUE_DIR/.counter" 2>/dev/null || echo 0)
+    counter=$((counter + 1))
+    echo "$counter" > "$QUEUE_DIR/.counter"
+    filename=$(printf "%06d_%s.json" "$counter" "$(date +%s)")
+    jq -n --arg sid "$session_id" --arg text "$summary" --arg voice "$voice" --argjson ts "$(date +%s)" \
+      '{session_id: $sid, text: $text, voice: $voice, queued_at: $ts}' > "$QUEUE_DIR/$filename"
+    echo "[$(date)] Queued item $filename: ${summary}" >> "$LOG"
+  ) 9>"$QUEUE_DIR/.lock"
+  exit 0
+fi
+
+# Scaling table: input word count → max summary words
+if [ "$word_count" -lt 20 ]; then
+  max_words=0  # passthrough
+elif [ "$word_count" -le 60 ]; then
+  max_words=20
+elif [ "$word_count" -le 150 ]; then
+  max_words=30
+elif [ "$word_count" -le 500 ]; then
+  max_words=40
+elif [ "$word_count" -le 1000 ]; then
+  max_words=50
+else
+  max_words=60
+fi
+
+# --- Content-type detection ---
+content_hint=""
+
+# Question detection: ? in last 200 chars
+last_200="${cleaned: -200}"
+if echo "$last_200" | grep -q '?'; then
+  content_hint="The response ends with a question. You MUST include that question in your summary."
+fi
+
+# Error detection
+if echo "$cleaned" | grep -qi 'error\|failed\|traceback\|exception\|fatal'; then
+  if [ -n "$content_hint" ]; then
+    content_hint="$content_hint This is an error report. State the error clearly."
+  else
+    content_hint="This is an error report. State the error clearly. Use an urgent tone."
+  fi
+  max_words=$((max_words + 10))
+fi
+
+# List detection: 3+ list items
+list_count=$(echo "$cleaned" | grep -cE '^\s*([-*]|[0-9]+[.)]) ')
+if [ "$list_count" -ge 3 ]; then
+  if [ -n "$content_hint" ]; then
+    content_hint="$content_hint The response lists $list_count items."
+  else
+    content_hint="The response lists $list_count items. Summarize what the items are about, don't enumerate each one."
+  fi
+fi
+
+# --- Passthrough or summarize ---
+if [ "$max_words" -eq 0 ]; then
+  # Short input: speak directly, no model call
   summary="$cleaned"
+  echo "[$(date)] Passthrough (${word_count} words, under 20)" >> "$LOG"
+else
+  # Summarize via mlx-lm with scaling args
+  summary=$(echo "$cleaned" | "$VENV" "$SUMMARIZE" \
+    --max-words "$max_words" \
+    --word-count "$word_count" \
+    --content-hint "$content_hint" 2>/dev/null)
+
+  # Fall back to cleaned text if summarization fails
+  if [ -z "$summary" ]; then
+    echo "[$(date)] mlx-lm summarization failed, using cleaned text" >> "$LOG"
+    summary="$cleaned"
+  fi
+
+  # Log scaling info
+  actual_words=$(echo "$summary" | wc -w | tr -d ' ')
+  echo "[$(date)] Scaling: input=${word_count}w max=${max_words}w actual=${actual_words}w hint='${content_hint:0:40}'" >> "$LOG"
 fi
 
 # Push to queue
