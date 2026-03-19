@@ -15,12 +15,10 @@ warnings.filterwarnings("ignore")
 
 MODEL_ID = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
 SYSTEM_PROMPT = (
-    "You are a spoken summary generator for a coding assistant. "
-    "Produce 1-2 short spoken sentences. Rules: Be accurate and specific. "
-    "No filler words. No first person. No code, URLs, or file paths. "
-    "Do not interpret or editorialize. If the response contains a detailed plan, "
-    "long explanation, or asks the user questions, summarize the key point and "
-    "say to check the output for details. Keep it under 30 words."
+    "Summarize in one casual sentence what was accomplished. "
+    "No code or file paths. Talk like telling a coworker. "
+    "If there are questions or choices, mention what decision is needed. "
+    "Keep it under 25 words."
 )
 
 def summarize(text: str) -> str:
