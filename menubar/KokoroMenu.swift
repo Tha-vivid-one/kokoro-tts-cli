@@ -1,9 +1,17 @@
 import Cocoa
 
+struct ClaudeSession {
+    let sessionId: String
+    let projectName: String
+    let slug: String
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var daemonTimer: Timer?
     var selectedVoice: String = "af_heart"
+    var mutedSessions: Set<String> = []
+    var activeSessions: [ClaudeSession] = []
 
     let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
     var ttsDir: String { "\(homeDir)/kokoro-tts-cli" }
@@ -14,6 +22,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let pidFile = "/tmp/kokoro-daemon.pid"
     let socketFile = "/tmp/kokoro-daemon.sock"
     let voiceFile = "/tmp/kokoro-voice.txt"
+    let muteFile = "/tmp/kokoro-muted-sessions.json"
+    let queueDir = "/tmp/kokoro-queue"
 
     let activeColor = NSColor(red: 0.5176, green: 0.9412, blue: 0.6118, alpha: 1.0)
     let inactiveColor = NSColor(red: 0.5216, green: 0.5216, blue: 0.5216, alpha: 1.0)
@@ -32,20 +42,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
-        // Load saved voice
         if let saved = try? String(contentsOfFile: voiceFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
            !saved.isEmpty {
             selectedVoice = saved
         }
 
+        loadMutedSessions()
+        discoverSessions()
         updateIcon()
         buildMenu()
 
         daemonTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.discoverSessions()
             self?.updateIcon()
             self?.buildMenu()
         }
     }
+
+    // MARK: - Daemon Status
 
     func isDaemonRunning() -> Bool {
         guard FileManager.default.fileExists(atPath: pidFile),
@@ -69,9 +83,102 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Session Discovery
+
+    func discoverSessions() {
+        let task = Process()
+        let pipe = Pipe()
+        task.executableURL = URL(fileURLWithPath: "/bin/bash")
+        task.arguments = ["-c", "ps aux | grep -o '\\-\\-resume [^ ]*' | cut -d' ' -f2 | sort -u"]
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        try? task.run()
+        task.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        let sessionIds = output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+
+        var sessions: [ClaudeSession] = []
+        let projectsDir = "\(homeDir)/.claude/projects"
+
+        for sid in sessionIds {
+            // Find the transcript file
+            let findTask = Process()
+            let findPipe = Pipe()
+            findTask.executableURL = URL(fileURLWithPath: "/bin/bash")
+            findTask.arguments = ["-c", "ls \(projectsDir)/*/\(sid).jsonl 2>/dev/null | head -1"]
+            findTask.standardOutput = findPipe
+            findTask.standardError = FileHandle.nullDevice
+            try? findTask.run()
+            findTask.waitUntilExit()
+
+            let findData = findPipe.fileHandleForReading.readDataToEndOfFile()
+            let transcriptPath = String(data: findData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            guard !transcriptPath.isEmpty else { continue }
+
+            // Read first few lines to find cwd and slug
+            var projectName = "Unknown"
+            var slug = ""
+
+            if let fileHandle = FileHandle(forReadingAtPath: transcriptPath) {
+                // Read first 4KB to find metadata
+                let chunk = fileHandle.readData(ofLength: 4096)
+                fileHandle.closeFile()
+                if let text = String(data: chunk, encoding: .utf8) {
+                    let lines = text.split(separator: "\n", maxSplits: 5)
+                    for line in lines {
+                        if let lineData = line.data(using: .utf8),
+                           let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] {
+                            if let cwd = json["cwd"] as? String, projectName == "Unknown" {
+                                projectName = (cwd as NSString).lastPathComponent
+                            }
+                            if let s = json["slug"] as? String, slug.isEmpty {
+                                slug = s
+                            }
+                            if projectName != "Unknown" && !slug.isEmpty { break }
+                        }
+                    }
+                }
+            }
+
+            sessions.append(ClaudeSession(sessionId: sid, projectName: projectName, slug: slug))
+        }
+
+        activeSessions = sessions
+    }
+
+    // MARK: - Queue
+
+    func queueCount() -> Int {
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: queueDir) else { return 0 }
+        return files.filter { $0.hasSuffix(".json") }.count
+    }
+
+    // MARK: - Mute Management
+
+    func loadMutedSessions() {
+        guard let data = FileManager.default.contents(atPath: muteFile),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [String] else {
+            mutedSessions = []
+            return
+        }
+        mutedSessions = Set(arr)
+    }
+
+    func saveMutedSessions() {
+        let arr = Array(mutedSessions)
+        if let data = try? JSONSerialization.data(withJSONObject: arr, options: []) {
+            FileManager.default.createFile(atPath: muteFile, contents: data)
+        }
+    }
+
     func saveVoice() {
         try? selectedVoice.write(toFile: voiceFile, atomically: true, encoding: .utf8)
     }
+
+    // MARK: - Menu
 
     func buildMenu() {
         let menu = NSMenu()
@@ -97,8 +204,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         toggleItem.target = self
         menu.addItem(toggleItem)
 
-        menu.addItem(NSMenuItem.separator())
-
         // Stop Playback
         let stopItem = NSMenuItem(title: "Stop Playback", action: #selector(stopPlayback), keyEquivalent: "s")
         stopItem.target = self
@@ -110,6 +215,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(testItem)
 
         menu.addItem(NSMenuItem.separator())
+
+        // Sessions section
+        if !activeSessions.isEmpty {
+            let sessionsHeader = NSMenuItem(title: "Sessions", action: nil, keyEquivalent: "")
+            sessionsHeader.isEnabled = false
+            menu.addItem(sessionsHeader)
+
+            for session in activeSessions {
+                let isMuted = mutedSessions.contains(session.sessionId)
+                let label = session.slug.isEmpty
+                    ? session.projectName
+                    : "\(session.projectName) — \(session.slug)"
+                let item = NSMenuItem(title: label, action: #selector(toggleSessionMute(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = session.sessionId
+
+                // Load play/stop icon
+                let iconName = isMuted ? "Stop.png" : "Play.png"
+                let iconPath = "\(menubarDir)/\(iconName)"
+                if let icon = NSImage(contentsOfFile: iconPath) {
+                    icon.size = NSSize(width: 14, height: 14)
+                    item.image = icon
+                } else {
+                    // Fallback: use text indicators
+                    item.state = isMuted ? .off : .on
+                }
+
+                menu.addItem(item)
+            }
+
+            // Queue count
+            let count = queueCount()
+            if count > 0 {
+                let queueItem = NSMenuItem(title: "Queue: \(count) item\(count == 1 ? "" : "s")", action: nil, keyEquivalent: "")
+                queueItem.isEnabled = false
+                menu.addItem(queueItem)
+            }
+
+            menu.addItem(NSMenuItem.separator())
+        }
 
         // Voice submenu
         let voiceMenuItem = NSMenuItem(title: "Voice", action: nil, keyEquivalent: "")
@@ -147,6 +292,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         self.statusItem.menu = menu
     }
+
+    // MARK: - Actions
 
     @objc func toggleDaemon() {
         if isDaemonRunning() {
@@ -200,21 +347,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
     }
 
+    @objc func toggleSessionMute(_ sender: NSMenuItem) {
+        guard let sessionId = sender.representedObject as? String else { return }
+        if mutedSessions.contains(sessionId) {
+            mutedSessions.remove(sessionId)
+        } else {
+            mutedSessions.insert(sessionId)
+        }
+        saveMutedSessions()
+        buildMenu()
+    }
+
     @objc func showInfo() {
         let info = """
         Kokoro TTS — Local Voice Feedback for Claude Code
 
         HOW IT WORKS
-        Every time Claude finishes a response, the Stop hook reads it and speaks a summary through Kokoro TTS. When you type a new prompt, playback cuts off immediately.
+        Every time Claude finishes a response, the hook summarizes it via Gemma 3n (local LM Studio) and queues it for Kokoro TTS. Responses from multiple sessions are spoken in order.
 
         ON / OFF
-        Use "Turn On" / "Turn Off" to toggle TTS. When off (gray icon), responses won't be spoken. When on (green icon), the warm daemon is loaded for instant generation.
+        Use "Turn On" / "Turn Off" to toggle TTS. When off (gray icon), responses won't be spoken.
+
+        SESSIONS
+        All active Claude Code sessions are listed. Click a session to mute/unmute it. Muted sessions are silenced but still tracked.
+
+        QUEUE
+        Responses are queued and spoken in order. "Stop Playback" skips the current item; the queue continues.
 
         VOICES
         Pick a voice from the Voice submenu. Your selection is saved between sessions.
-
-        INTERRUPTING
-        TTS is automatically interrupted when you send a new message. You can also click "Stop Playback" or use the keyboard shortcut.
 
         DEBUG
         Check /tmp/kokoro-hook.log for hook output.

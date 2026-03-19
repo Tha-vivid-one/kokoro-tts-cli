@@ -31,6 +31,9 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 fi
 
+# Ensure queue directory exists
+mkdir -p /tmp/kokoro-queue
+
 # Start daemon in background, wait for ready signal
 "$VENV" "$DAEMON" &
 daemon_pid=$!
@@ -38,6 +41,18 @@ daemon_pid=$!
 for i in {1..60}; do
     if [ -S "$SOCKET" ]; then
         echo "Kokoro daemon ready (PID $daemon_pid)"
+
+        # Start queue consumer if not already running
+        CONSUMER_PID_FILE=/tmp/kokoro-queue-consumer.pid
+        if [ -f "$CONSUMER_PID_FILE" ]; then
+            consumer_pid=$(cat "$CONSUMER_PID_FILE")
+            if kill -0 "$consumer_pid" 2>/dev/null; then
+                echo "Queue consumer already running (PID $consumer_pid)"
+                exit 0
+            fi
+        fi
+        bash "$SCRIPT_DIR/queue-consumer.sh" &
+        echo "Queue consumer started"
         exit 0
     fi
     sleep 0.5
