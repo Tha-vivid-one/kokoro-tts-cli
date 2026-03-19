@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# TTS Stop Hook — summarizes via Gemma 3n (LM Studio), pushes to queue
+# TTS Stop Hook — summarizes via mlx-lm (Qwen2.5-1.5B) then pushes to queue
 # Only queues if the warm daemon is running (menu bar icon = on/off)
 
+SUMMARIZE="/Users/lincoln/kokoro-tts-cli/summarize.py"
+VENV="/Users/lincoln/kokoro-tts-cli/.venv/bin/python3"
 LOG="/tmp/kokoro-hook.log"
 MAX_CHARS=3000
 SOCKET="/tmp/kokoro-daemon.sock"
 VOICE_FILE="/tmp/kokoro-voice.txt"
 MUTE_FILE="/tmp/kokoro-muted-sessions.json"
 QUEUE_DIR="/tmp/kokoro-queue"
-LM_STUDIO="http://localhost:1234/v1/chat/completions"
-SUMMARY_MODEL="google/gemma-3n-e4b"
 
 # Require daemon to be running
 if [ ! -S "$SOCKET" ]; then
@@ -61,28 +61,12 @@ if [ -z "$cleaned" ]; then
   exit 0
 fi
 
-# Summarize via LM Studio (Gemma 3n)
-escaped=$(echo "$cleaned" | jq -Rs '.')
-payload=$(cat <<ENDJSON
-{
-  "model": "$SUMMARY_MODEL",
-  "messages": [
-    {"role": "system", "content": "You are a spoken summary generator for a coding assistant. Produce 1-2 short spoken sentences. Rules: Be accurate and specific. No filler words. No first person. No code, URLs, or file paths. Do not interpret or editorialize. If the response contains a detailed plan, long explanation, multiple options, or asks the user questions, summarize the key point and say to check the output for details. If the response asks the user to choose or answer something, mention what decision is needed. Keep it under 30 words."},
-    {"role": "user", "content": $escaped}
-  ],
-  "max_tokens": 150,
-  "temperature": 0.3
-}
-ENDJSON
-)
-
-summary=$(curl -s --max-time 10 "$LM_STUDIO" \
-  -H "Content-Type: application/json" \
-  -d "$payload" 2>/dev/null | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+# Summarize via mlx-lm (local, no external API)
+summary=$(echo "$cleaned" | "$VENV" "$SUMMARIZE" 2>/dev/null)
 
 # Fall back to cleaned text if summarization fails
 if [ -z "$summary" ]; then
-  echo "[$(date)] LM Studio summarization failed, using cleaned text" >> "$LOG"
+  echo "[$(date)] mlx-lm summarization failed, using cleaned text" >> "$LOG"
   summary="$cleaned"
 fi
 
