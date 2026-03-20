@@ -14,10 +14,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var activeSessions: [ClaudeSession] = []
 
     let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
-    var ttsDir: String { "\(homeDir)/kokoro-tts-cli" }
+    var ttsDir: String { "\(homeDir)/Developer/tools/kokoro-tts-cli" }
     let menubarDir: String = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/kokoro-tts-cli/menubar"
+        return "\(home)/Developer/tools/kokoro-tts-cli/menubar"
     }()
     let pidFile = "/tmp/kokoro-daemon.pid"
     let socketFile = "/tmp/kokoro-daemon.sock"

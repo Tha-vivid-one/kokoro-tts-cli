@@ -6,7 +6,7 @@
     <string>com.kokoro.menu</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/lincoln/kokoro-tts-cli/menubar/KokoroMenu</string>
+        <string>/Users/lincoln/Developer/tools/kokoro-tts-cli/menubar/KokoroMenu</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
